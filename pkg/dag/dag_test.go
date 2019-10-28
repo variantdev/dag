@@ -63,6 +63,22 @@ func TestDAG_DagAPI(t *testing.T) {
 	if actual != expected {
 		t.Errorf("unexpected result: expected=%q, got=%q", expected, actual)
 	}
+
+	groups := [][]string{
+		{"cache", "net"},
+		{"db", "mesh"},
+		{"api"},
+		{"web"},
+	}
+
+	for i, g := range groups {
+		for j, expected := range g {
+			actual := res[i][j].Id
+			if actual != expected {
+				t.Errorf("unexpected id at %d, %d: expeted=%q, got=%q", i, j, expected, actual)
+			}
+		}
+	}
 }
 
 func TestDAG_DagCleanAPI(t *testing.T) {
