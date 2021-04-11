@@ -184,8 +184,8 @@ func (n *Cycle) String() string {
 	return strings.Join(n.Path, " -> ")
 }
 
-func (g *DAG) Plan() (Topology, error) {
-	return g.Sort()
+func (g *DAG) Plan(opts ...SortOption) (Topology, error) {
+	return g.Sort(opts...)
 }
 
 type Topology [][]*NodeInfo
@@ -244,15 +244,125 @@ func (e *Error) Error() string {
 	return fmt.Sprintf("cycle detected: %v", e.Cycle)
 }
 
+type UnhandledDependencyError struct {
+	UnhandledDependencies []UnhandledDependency
+}
+
+type UnhandledDependency struct {
+	Id         string
+	Dependents []string
+}
+
+func (e *UnhandledDependencyError) Error() string {
+	ud := e.UnhandledDependencies[0]
+
+	dependents := make([]string, len(ud.Dependents))
+
+	for i := 0; i < len(dependents); i++ {
+		dependents[i] = fmt.Sprintf("%q", ud.Dependents[i])
+	}
+
+	var ds string
+
+	if len(dependents) < 3 {
+		ds = strings.Join(dependents, " and ")
+	} else {
+		ds = strings.Join(dependents[:len(dependents)-1], ", ")
+		ds += ", and " + dependents[len(dependents)-1]
+	}
+
+	return fmt.Sprintf("%q depended by %s is not included", ud.Id, ds)
+}
+
+type SortOptions struct {
+	Only []string
+
+	WithDependencies bool
+
+	WithoutDependencies bool
+}
+
+func (so SortOptions) ApplySortOptions(dst *SortOptions) {
+	*dst = so
+}
+
+type SortOption interface {
+	ApplySortOptions(*SortOptions)
+}
+
+type sortOptionFunc struct {
+	f func(so *SortOptions)
+}
+
+func (sof *sortOptionFunc) ApplySortOptions(so *SortOptions) {
+	sof.f(so)
+}
+
+func SortOptionFunc(f func(so *SortOptions)) SortOption {
+	return &sortOptionFunc{
+		f: f,
+	}
+}
+
+func Only(nodes ...string) SortOption {
+	return SortOptionFunc(func(so *SortOptions) {
+		so.Only = append(so.Only, nodes...)
+	})
+}
+
+func WithDependencies() SortOption {
+	return SortOptionFunc(func(so *SortOptions) {
+		so.WithDependencies = true
+	})
+}
+
+func WithoutDependencies() SortOption {
+	return SortOptionFunc(func(so *SortOptions) {
+		so.WithoutDependencies = true
+	})
+}
+
 // Sort topologically sorts the nodes while grouping nodes at the same "depth" into a same group
-func (g *DAG) Sort() (Topology, error) {
+func (g *DAG) Sort(opts ...SortOption) (Topology, error) {
+	var options SortOptions
+
+	for _, o := range opts {
+		o.ApplySortOptions(&options)
+	}
+
+	var only map[string]struct{}
+
+	if len(options.Only) > 0 {
+		only = map[string]struct{}{}
+
+		for _, o := range options.Only {
+			only[o] = struct{}{}
+		}
+	}
+
+	numInputs := map[string]int{}
+	for k, v := range g.numInputs {
+		numInputs[k] = v
+	}
+
+	outputs := map[string]map[string]bool{}
+	for k, v := range g.outputs {
+		outputs[k] = map[string]bool{}
+		for k2, v2 := range v {
+			outputs[k][k2] = v2
+		}
+	}
+
+	withDeps := options.WithDependencies
+	withoutDeps := options.WithoutDependencies
+
 	nodes := map[string]*NodeInfo{}
 	current := make([]*NodeInfo, 0, len(g.nodes))
 
 	for _, n := range g.nodes {
 		info := &NodeInfo{Id: n}
 		nodes[n] = info
-		if g.numInputs[n] == 0 {
+		if numInputs[n] == 0 {
 			current = append(current, info)
 		}
 	}
@@ -270,22 +380,25 @@ func (g *DAG) Sort() (Topology, error) {
 		n, current = current[0], current[1:]
 		sortedSets[depth] = append(sortedSets[depth], n)
 
-		ms := make([]string, len(g.outputs[n.Id]))
+		ms := make([]string, len(outputs[n.Id]))
 		i := 0
-		for m := range g.outputs[n.Id] {
+		for m := range outputs[n.Id] {
 			ms[i] = m
 			i++
 		}
 
 		for _, m := range ms {
-			g.unsafeRemoveEdge(n.Id, m)
+			// unsafeRemoveEdge
+			from, to := n.Id, m
+			delete(outputs[from], to)
+			numInputs[to]--
 
 			mm := nodes[m]
 			mm.ParentIds = append(mm.ParentIds, n.Id)
 
 			n.ChildIds = append(n.ChildIds, mm.Id)
 
-			if g.numInputs[m] == 0 {
+			if numInputs[m] == 0 {
 				next = append(next, mm)
 			}
 		}
@@ -300,7 +413,7 @@ func (g *DAG) Sort() (Topology, error) {
 	invalidNodes := []*NodeInfo{}
 
 	numUnresolvedEdges := 0
-	for id, v := range g.numInputs {
+	for id, v := range numInputs {
 		numUnresolvedEdges += v
 
 		if v > 0 {
@@ -320,7 +433,7 @@ func (g *DAG) Sort() (Topology, error) {
 		sort.Strings(sorted)
 
 		for _, id := range sorted {
-			if len(g.outputs[id]) > 0 {
+			if len(outputs[id]) > 0 {
 				cur = id
 				break
 			}
@@ -334,7 +447,7 @@ func (g *DAG) Sort() (Topology, error) {
 		for !seen[cur] {
 			seen[cur] = true
 			path = append(path, cur)
-			for k, _ := range g.outputs[cur] {
+			for k, _ := range outputs[cur] {
 				cur = k
 				break
 			}
@@ -350,9 +463,84 @@ func (g *DAG) Sort() (Topology, error) {
 	}
 
 	r := make(Topology, len(sortedSets))
-	for k, v := range sortedSets {
-		r[k] = v
+
+	for k := len(sortedSets) - 1; k >= 0; k-- {
+		v := sortedSets[k]
+
+		var included []*NodeInfo
+
+		for i := range v {
+			node := v[i]
+
+			if only == nil {
+				included = append(included, node)
+				continue
+			}
+
+			if _, ok := only[node.Id]; ok {
+				included = append(included, node)
+				continue
+			}
+
+			if withoutDeps {
+				continue
+			}
+
+			var depended bool
+			var dependents []string
+
+			allDependents := g.outputs[node.Id]
+			for target := range only {
+				if allDependents[target] {
+					// This node is depended by one of the selected nodes
+					depended = true
+					dependents = append(dependents, target)
+				}
+			}
+
+			if depended {
+				// The user has not opted-in to automatically include this node as depended by the one of the selected nodes
+				if !withDeps {
+					sort.Strings(dependents)
+
+					return nil, &UnhandledDependencyError{
+						UnhandledDependencies: []UnhandledDependency{
+							{
+								Id:         node.Id,
+								Dependents: dependents,
+							},
+						},
+					}
+				}
+
+				// The user has opted-in to automatically include this node as the dependency of one of the selected nodes
+
+				// To include any transitive dependencies of the this node into the dag,
+				// we treat this node as included in the selected nodes list.
+				only[node.Id] = struct{}{}
+				included = append(included, node)
+				continue
+			}
+		}
+
+		if len(included) == 0 {
+			continue
+		}
+
+		sort.Slice(included, func(i, j int) bool {
+			return included[i].Id < included[j].Id
+		})
+
+		r[k] = included
 	}
 
-	return r, nil
+	res := [][]*NodeInfo{}
+
+	for _, ns := range r {
+		if len(ns) > 0 {
+			res = append(res, ns)
+		}
+	}
+
+	return res, nil
 }
