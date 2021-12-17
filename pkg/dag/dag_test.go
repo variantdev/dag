@@ -2,6 +2,7 @@ package dag
 
 import (
 	"bytes"
+	"fmt"
 	"log"
 	"testing"
 )
@@ -94,6 +95,8 @@ func TestDAG_DagCleanAPI(t *testing.T) {
 	g2.Add("api", Dependencies([]string{"db", "cache", "net"}))
 	g2.Add("db", Dependencies([]string{"net"}))
 	g2.Add("mesh", Dependencies([]string{"net"}))
+	g2.Add("net")
+	g2.Add("cache")
 
 	res, err := g2.Plan()
 	if err != nil {
@@ -291,6 +294,8 @@ func TestDAG_Dag_Dot(t *testing.T) {
 	g2.Add("release/api", Dependencies([]string{"release/db", "release/cache", "release/net"}), Labels([]string{"tier:api"}))
 	g2.Add("release/db", Dependencies([]string{"release/net"}), Labels([]string{"tier:db"}))
 	g2.Add("release/mesh", Dependencies([]string{"release/net"}), Labels([]string{"tier:net"}))
+	g2.Add("release/net")
+	g2.Add("release/cache")
 
 	w := &bytes.Buffer{}
 
@@ -363,5 +368,29 @@ func TestDAG_GraphAPICycle(t *testing.T) {
 
 	if actual != expected {
 		t.Errorf("unexpected result: expected=%q, got=%q", expected, actual)
+	}
+}
+
+func TestDAG_UndefinedDependency_MaybeTypo(t *testing.T) {
+	g2 := New()
+	g2.Add(
+		"web",
+		Dependencies([]string{
+			"ok",
+			"ng",
+		}),
+	)
+	g2.Add(
+		"ok",
+	)
+
+	_, err := g2.Plan()
+
+	if err == nil {
+		t.Fatalf("expected error didnt occur")
+	}
+
+	if fmt.Sprintf("%v", err) != `undefined node "ng" is depended by node(s): web` {
+		t.Fatalf("%v", err)
 	}
 }

@@ -30,19 +30,32 @@ type DAG struct {
 	cap       int
 	initNodes []string
 
-	nodes     []string
-	outputs   map[string]map[string]bool
-	labels    map[string]map[string]bool
+	nodes []string
+	// a.k.a dependents of the node denoted by the key
+	// `outputs["api"]["web"] = true` means api's sole dependent is "web"
+	// i.e. "web" depends on "api"
+	outputs map[string]map[string]bool
+	labels  map[string]map[string]bool
+	// a.k.a number of dependenciesthat the node denoted by the key has.
+	// `numInputs["web"] = 2` means "web" has 2 dependencies.
 	numInputs map[string]int
 }
 
 func (g *DAG) AddNode(name string) bool {
-	if _, ok := g.outputs[name]; ok {
+	if _, ok := g.numInputs[name]; ok {
 		return false
 	}
+
 	g.nodes = append(g.nodes, name)
-	g.outputs[name] = make(map[string]bool)
-	g.numInputs[name] = 0
+
+	if _, ok := g.outputs[name]; !ok {
+		g.outputs[name] = make(map[string]bool)
+	}
+
+	if _, ok := g.numInputs[name]; ok {
+		g.numInputs[name] = 0
+	}
+
 	return true
 }
 
@@ -76,7 +89,8 @@ func (g *DAG) AddNodes(names ...string) bool {
 func (g *DAG) AddEdge(from, to string) bool {
 	m, ok := g.outputs[from]
 	if !ok {
-		return false
+		m = map[string]bool{}
+		g.outputs[from] = m
 	}
 
 	m[to] = true
@@ -139,10 +153,6 @@ func (g *DAG) Add(node string, opt ...AddOption) bool {
 	}
 
 	g.AddNode(node)
-
-	for _, d := range opts.deps {
-		g.Add(d)
-	}
 
 	deps := g.AddDependencies(node, opts.deps)
 
@@ -242,6 +252,15 @@ type Error struct {
 
 func (e *Error) Error() string {
 	return fmt.Sprintf("cycle detected: %v", e.Cycle)
+}
+
+type UndefinedDependencyError struct {
+	UndefinedNode string
+	Dependents    []string
+}
+
+func (e *UndefinedDependencyError) Error() string {
+	return fmt.Sprintf("undefined node %q is depended by node(s): %s", e.UndefinedNode, strings.Join(e.Dependents, ", "))
 }
 
 type UnhandledDependencyError struct {
@@ -364,6 +383,19 @@ func (g *DAG) Sort(opts ...SortOption) (Topology, error) {
 		nodes[n] = info
 		if numInputs[n] == 0 {
 			current = append(current, info)
+		}
+	}
+
+	for dep, dependents := range outputs {
+		if _, ok := nodes[dep]; !ok {
+			var dependentsNames []string
+			for d := range dependents {
+				dependentsNames = append(dependentsNames, d)
+			}
+			return nil, &UndefinedDependencyError{
+				UndefinedNode: dep,
+				Dependents:    dependentsNames,
+			}
 		}
 	}
 
