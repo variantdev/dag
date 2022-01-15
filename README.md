@@ -4,9 +4,22 @@ Topologically sortable DAG implementation for Go with support for parallel items
 
 ## Examples
 
+This package provides two sub-packages.
+
+`strdag` accepts `string` as node key. `dag` is a more general variant that accepts `Key` as node key.
+
+- [strdag package](#strdag)
+- [dag package](#dag)
+
+### strdag package
+
 Planning the order of application deployments, so that all apps are ensured to be deployed after their dependencies are ready:
 
 ```golang
+import (
+    dag "github.com/variantdev/dag/pkg/strdag"
+)
+
 g := dag.New(dag.Nodes([]string{"web", "api", "db", "cache", "mesh", "net"}))
 g.AddDependencies("web", []string{"api", "cache", "net"})
 g.AddDependencies("api", []string{"db", "cache", "net"})
@@ -94,3 +107,11 @@ if ude, ok := err.(*UnhandledDependencyError); ok {
     // => {db mesh}
 }
 ```
+
+### dag package
+
+`dag` package works almost the same as `strdag` package explained above.
+
+The only difference is that it accepts anything that implements the `dag.Key` interface.
+
+I believe you'll usually find it more easy to use `strdag`. But you sometimes need to use `dag` when you want to use any struct as key.

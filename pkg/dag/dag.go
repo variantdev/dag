@@ -14,46 +14,50 @@ func Capacity(n int) Option {
 	}
 }
 
-func Node(nodes ...string) Option {
+func Node(nodes ...Key) Option {
 	return func(g *DAG) {
 		g.initNodes = nodes
 	}
 }
 
-func Nodes(nodes []string) Option {
+func Nodes(nodes []Key) Option {
 	return func(g *DAG) {
 		g.initNodes = nodes
 	}
+}
+
+type Key interface {
+	Less(r Key) bool
 }
 
 type DAG struct {
 	cap       int
-	initNodes []string
+	initNodes []Key
 
-	nodes []string
+	nodes []Key
 	// a.k.a dependents of the node denoted by the key
 	// `outputs["api"]["web"] = true` means api's sole dependent is "web"
 	// i.e. "web" depends on "api"
-	outputs map[string]map[string]bool
-	labels  map[string]map[string]bool
+	outputs map[Key]map[Key]bool
+	labels  map[Key]map[string]bool
 	// a.k.a number of dependenciesthat the node denoted by the key has.
 	// `numInputs["web"] = 2` means "web" has 2 dependencies.
-	numInputs map[string]int
+	numInputs map[Key]int
 }
 
-func (g *DAG) AddNode(name string) bool {
-	if _, ok := g.numInputs[name]; ok {
+func (g *DAG) AddNode(key Key) bool {
+	if _, ok := g.numInputs[key]; ok {
 		return false
 	}
 
-	g.nodes = append(g.nodes, name)
+	g.nodes = append(g.nodes, key)
 
-	if _, ok := g.outputs[name]; !ok {
-		g.outputs[name] = make(map[string]bool)
+	if _, ok := g.outputs[key]; !ok {
+		g.outputs[key] = make(map[Key]bool)
 	}
 
-	if _, ok := g.numInputs[name]; ok {
-		g.numInputs[name] = 0
+	if _, ok := g.numInputs[key]; ok {
+		g.numInputs[key] = 0
 	}
 
 	return true
@@ -61,23 +65,23 @@ func (g *DAG) AddNode(name string) bool {
 
 func New(opt ...Option) *DAG {
 	g := &DAG{
-		numInputs: make(map[string]int),
-		outputs:   make(map[string]map[string]bool),
-		labels:    make(map[string]map[string]bool),
+		numInputs: make(map[Key]int),
+		outputs:   make(map[Key]map[Key]bool),
+		labels:    make(map[Key]map[string]bool),
 	}
 
 	for _, o := range opt {
 		o(g)
 	}
 
-	g.nodes = make([]string, 0, g.cap)
+	g.nodes = make([]Key, 0, g.cap)
 
 	g.AddNodes(g.initNodes...)
 
 	return g
 }
 
-func (g *DAG) AddNodes(names ...string) bool {
+func (g *DAG) AddNodes(names ...Key) bool {
 	for _, name := range names {
 		if ok := g.AddNode(name); !ok {
 			return false
@@ -86,10 +90,10 @@ func (g *DAG) AddNodes(names ...string) bool {
 	return true
 }
 
-func (g *DAG) AddEdge(from, to string) bool {
+func (g *DAG) AddEdge(from, to Key) bool {
 	m, ok := g.outputs[from]
 	if !ok {
-		m = map[string]bool{}
+		m = map[Key]bool{}
 		g.outputs[from] = m
 	}
 
@@ -99,7 +103,7 @@ func (g *DAG) AddEdge(from, to string) bool {
 	return true
 }
 
-func (g *DAG) AddDependency(sub string, dependencies ...string) bool {
+func (g *DAG) AddDependency(sub Key, dependencies ...Key) bool {
 	for _, d := range dependencies {
 		if r := g.AddEdge(d, sub); !r {
 			return false
@@ -108,11 +112,11 @@ func (g *DAG) AddDependency(sub string, dependencies ...string) bool {
 	return true
 }
 
-func (g *DAG) AddDependencies(sub string, dependencies []string) bool {
+func (g *DAG) AddDependencies(sub Key, dependencies []Key) bool {
 	return g.AddDependency(sub, dependencies...)
 }
 
-func (g *DAG) AddLabel(sub string, labels ...string) {
+func (g *DAG) AddLabel(sub Key, labels ...string) {
 	for _, d := range labels {
 		m, ok := g.labels[sub]
 		if !ok {
@@ -123,18 +127,18 @@ func (g *DAG) AddLabel(sub string, labels ...string) {
 	}
 }
 
-func (g *DAG) AddLabels(sub string, labels []string) {
+func (g *DAG) AddLabels(sub Key, labels []string) {
 	g.AddLabel(sub, labels...)
 }
 
 type AddOption func(*AddOpts)
 
 type AddOpts struct {
-	deps   []string
+	deps   []Key
 	labels []string
 }
 
-func Dependencies(deps []string) AddOption {
+func Dependencies(deps ...Key) AddOption {
 	return func(o *AddOpts) {
 		o.deps = deps
 	}
@@ -146,7 +150,7 @@ func Labels(labels []string) AddOption {
 	}
 }
 
-func (g *DAG) Add(node string, opt ...AddOption) bool {
+func (g *DAG) Add(node Key, opt ...AddOption) bool {
 	opts := &AddOpts{}
 	for _, o := range opt {
 		o(opts)
@@ -161,12 +165,12 @@ func (g *DAG) Add(node string, opt ...AddOption) bool {
 	return deps
 }
 
-func (g *DAG) unsafeRemoveEdge(from, to string) {
+func (g *DAG) unsafeRemoveEdge(from, to Key) {
 	delete(g.outputs[from], to)
 	g.numInputs[to]--
 }
 
-func (g *DAG) RemoveEdge(from, to string) bool {
+func (g *DAG) RemoveEdge(from, to Key) bool {
 	if _, ok := g.outputs[from]; !ok {
 		return false
 	}
@@ -175,23 +179,28 @@ func (g *DAG) RemoveEdge(from, to string) bool {
 }
 
 type NodeInfo struct {
-	Id        string
-	ParentIds []string
-	ChildIds  []string
+	Id        Key
+	ParentIds []Key
+	ChildIds  []Key
 }
 
 func (n *NodeInfo) String() string {
-	return n.Id
+	return fmt.Sprintf("%s", n.Id)
 }
 
 // Cycle is not a loop :)
 // See https://math.stackexchange.com/questions/1490053
 type Cycle struct {
-	Path []string
+	Path []Key
 }
 
 func (n *Cycle) String() string {
-	return strings.Join(n.Path, " -> ")
+	var path []string
+	for _, p := range n.Path {
+		path = append(path, fmt.Sprintf("%s", p))
+	}
+
+	return strings.Join(path, " -> ")
 }
 
 func (g *DAG) Plan(opts ...SortOption) (Topology, error) {
@@ -208,22 +217,38 @@ func (r Topology) String() string {
 	res := []string{}
 
 	for _, set := range r {
-		ids := []string{}
+		ids := []Key{}
 		for _, n := range set {
 			ids = append(ids, n.Id)
 		}
-		sort.Strings(ids)
-		res = append(res, strings.Join(ids, ", "))
+		sort.Slice(ids, func(i, j int) bool {
+			return ids[i].Less(ids[j])
+		})
+		res = append(res, strings.Join(KeysToStringSlice(ids), ", "))
 	}
 
 	return strings.Join(res, " -> ")
 }
 
-func depthFirstPrint(nodes map[string]*NodeInfo, level int, levels map[int]map[string]bool, n *NodeInfo) [][]string {
+func sprintKey(k Key) string {
+	return fmt.Sprintf("%s", k)
+}
+
+func KeysToStringSlice(ks []Key) []string {
+	var ss []string
+
+	for _, k := range ks {
+		ss = append(ss, sprintKey(k))
+	}
+
+	return ss
+}
+
+func depthFirstPrint(nodes map[Key]*NodeInfo, level int, levels map[int]map[Key]bool, n *NodeInfo) [][]string {
 	lines := [][]string{}
 
 	if len(n.ChildIds) == 0 {
-		return [][]string{{n.Id}}
+		return [][]string{{sprintKey(n.Id)}}
 	}
 
 	for _, child := range n.ChildIds {
@@ -235,7 +260,7 @@ func depthFirstPrint(nodes map[string]*NodeInfo, level int, levels map[int]map[s
 		for i, line := range childLines {
 			var header []string
 			if i == 0 {
-				header = []string{n.Id}
+				header = []string{sprintKey(n.Id)}
 			} else {
 				header = []string{""}
 			}
@@ -255,12 +280,12 @@ func (e *Error) Error() string {
 }
 
 type UndefinedDependencyError struct {
-	UndefinedNode string
-	Dependents    []string
+	UndefinedNode Key
+	Dependents    []Key
 }
 
 func (e *UndefinedDependencyError) Error() string {
-	return fmt.Sprintf("undefined node %q is depended by node(s): %s", e.UndefinedNode, strings.Join(e.Dependents, ", "))
+	return fmt.Sprintf("undefined node %q is depended by node(s): %s", e.UndefinedNode, strings.Join(KeysToStringSlice(e.Dependents), ", "))
 }
 
 type UnhandledDependencyError struct {
@@ -268,8 +293,8 @@ type UnhandledDependencyError struct {
 }
 
 type UnhandledDependency struct {
-	Id         string
-	Dependents []string
+	Id         Key
+	Dependents []Key
 }
 
 func (e *UnhandledDependencyError) Error() string {
@@ -294,7 +319,7 @@ func (e *UnhandledDependencyError) Error() string {
 }
 
 type SortOptions struct {
-	Only []string
+	Only []Key
 
 	WithDependencies bool
 
@@ -323,7 +348,7 @@ func SortOptionFunc(f func(so *SortOptions)) SortOption {
 	}
 }
 
-func Only(nodes ...string) SortOption {
+func Only(nodes ...Key) SortOption {
 	return SortOptionFunc(func(so *SortOptions) {
 		so.Only = append(so.Only, nodes...)
 	})
@@ -349,24 +374,24 @@ func (g *DAG) Sort(opts ...SortOption) (Topology, error) {
 		o.ApplySortOptions(&options)
 	}
 
-	var only map[string]struct{}
+	var only map[Key]struct{}
 
 	if len(options.Only) > 0 {
-		only = map[string]struct{}{}
+		only = map[Key]struct{}{}
 
 		for _, o := range options.Only {
 			only[o] = struct{}{}
 		}
 	}
 
-	numInputs := map[string]int{}
+	numInputs := map[Key]int{}
 	for k, v := range g.numInputs {
 		numInputs[k] = v
 	}
 
-	outputs := map[string]map[string]bool{}
+	outputs := map[Key]map[Key]bool{}
 	for k, v := range g.outputs {
-		outputs[k] = map[string]bool{}
+		outputs[k] = map[Key]bool{}
 		for k2, v2 := range v {
 			outputs[k][k2] = v2
 		}
@@ -375,7 +400,7 @@ func (g *DAG) Sort(opts ...SortOption) (Topology, error) {
 	withDeps := options.WithDependencies
 	withoutDeps := options.WithoutDependencies
 
-	nodes := map[string]*NodeInfo{}
+	nodes := map[Key]*NodeInfo{}
 	current := make([]*NodeInfo, 0, len(g.nodes))
 
 	for _, n := range g.nodes {
@@ -388,7 +413,7 @@ func (g *DAG) Sort(opts ...SortOption) (Topology, error) {
 
 	for dep, dependents := range outputs {
 		if _, ok := nodes[dep]; !ok {
-			var dependentsNames []string
+			var dependentsNames []Key
 			for d := range dependents {
 				dependentsNames = append(dependentsNames, d)
 			}
@@ -412,7 +437,7 @@ func (g *DAG) Sort(opts ...SortOption) (Topology, error) {
 		n, current = current[0], current[1:]
 		sortedSets[depth] = append(sortedSets[depth], n)
 
-		ms := make([]string, len(outputs[n.Id]))
+		ms := make([]Key, len(outputs[n.Id]))
 		i := 0
 		for m := range outputs[n.Id] {
 			ms[i] = m
@@ -454,15 +479,17 @@ func (g *DAG) Sort(opts ...SortOption) (Topology, error) {
 	}
 
 	if numUnresolvedEdges > 0 {
-		var cur string
+		var cur Key
 
 		// Sort Ids to make the result stable
-		sorted := []string{}
+		sorted := []Key{}
 		for _, n := range invalidNodes {
 			sorted = append(sorted, n.Id)
 		}
 
-		sort.Strings(sorted)
+		sort.Slice(sorted, func(i, j int) bool {
+			return sorted[i].Less(sorted[j])
+		})
 
 		for _, id := range sorted {
 			if len(outputs[id]) > 0 {
@@ -470,11 +497,11 @@ func (g *DAG) Sort(opts ...SortOption) (Topology, error) {
 				break
 			}
 		}
-		if cur == "" {
+		if cur == nil {
 			panic(fmt.Errorf("invalid state: no nodes have remaining edges: nodes=%v", invalidNodes))
 		}
-		seen := map[string]bool{}
-		path := []string{}
+		seen := map[Key]bool{}
+		path := []Key{}
 
 		for !seen[cur] {
 			seen[cur] = true
@@ -519,7 +546,7 @@ func (g *DAG) Sort(opts ...SortOption) (Topology, error) {
 			}
 
 			var depended bool
-			var dependents []string
+			var dependents []Key
 
 			allDependents := g.outputs[node.Id]
 			for target := range only {
@@ -533,7 +560,9 @@ func (g *DAG) Sort(opts ...SortOption) (Topology, error) {
 			if depended {
 				// The user has not opted-in to automatically include this node as depended by the one of the selected nodes
 				if !withDeps {
-					sort.Strings(dependents)
+					sort.Slice(dependents, func(i, j int) bool {
+						return dependents[i].Less(dependents[j])
+					})
 
 					return nil, &UnhandledDependencyError{
 						UnhandledDependencies: []UnhandledDependency{
@@ -560,7 +589,7 @@ func (g *DAG) Sort(opts ...SortOption) (Topology, error) {
 		}
 
 		sort.Slice(included, func(i, j int) bool {
-			return included[i].Id < included[j].Id
+			return included[i].Id.Less(included[j].Id)
 		})
 
 		r[k] = included
